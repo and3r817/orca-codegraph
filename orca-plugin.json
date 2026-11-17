@@ -1,0 +1,32 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stablyai/orca/main/docs/schemas/plugins/orca-plugin.v2.schema.json",
+  "manifestVersion": 2,
+  "id": "codegraph",
+  "name": "CodeGraph Index",
+  "version": "0.1.0",
+  "description": "Unofficial. Builds the CodeGraph index of each new workspace and holds the agent until the index is ready.",
+  "author": {
+    "name": "and3r817",
+    "url": "https://github.com/and3r817"
+  },
+  "repository": "https://github.com/and3r817/orca-codegraph",
+  "license": "MIT",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "hooks": [
+      {
+        "event": "workspace.create.after",
+        "onError": "pass"
+      },
+      {
+        "event": "agent.launch.before",
+        "onError": "pass"
+      }
+    ]
+  }
+}
