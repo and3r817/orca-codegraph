@@ -129,3 +129,18 @@ test('keeps a marker file while the index is built and removes it after', async 
   assert.equal(existsSync(marker), false)
   assert.equal(keeper.pendingMarker('repo::wt'), undefined)
 })
+
+test('ignores a second check for a workspace whose index is being built', async () => {
+  let finishInit = (): void => {}
+  const initDone = new Promise<CommandResult>((resolve) => {
+    finishInit = () => resolve(OK)
+  })
+  const base = answerFor(primaryCheckout(true), { initialized: false })
+  const { keeper, calls } = keeperFor((call) => (call.args[0] === 'init' ? initDone : base(call)))
+  const first = keeper.ensure('repo::wt', WORKTREE)
+  const second = keeper.ensure('repo::wt', WORKTREE)
+  finishInit()
+  await Promise.all([first, second])
+  assert.equal(codegraphCalls(calls).filter((line) => line.startsWith('init')).length, 1)
+  assert.equal(keeper.pendingMarker('repo::wt'), undefined)
+})

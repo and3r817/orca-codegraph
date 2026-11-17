@@ -33,6 +33,9 @@ export class IndexKeeper {
   }
 
   async ensure(workspaceId: string, path: string): Promise<void> {
+    if (this.pending.has(workspaceId)) {
+      return
+    }
     const marker = markerPath(this.markerDir, path)
     mkdirSync(this.markerDir, { recursive: true })
     writeFileSync(marker, '')
