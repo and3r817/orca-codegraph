@@ -15,7 +15,7 @@ The plugin does these steps in the background when Orca creates a workspace. It 
 5. Otherwise, it reads `codegraph status --json` for the workspace.
 6. If CodeGraph recommends a new index, it runs `codegraph index -q`.
 
-Orca can start the agent of a new workspace before it reports the new workspace. The plugin starts the steps at the agent start. The plugin puts a wait in front of the agent command. The terminal shows `orca-codegraph: waiting for the CodeGraph index`. The agent starts when the index is ready, or after 300 seconds.
+Orca can start the agent of a new workspace before it reports the new workspace. In that case, the plugin starts the steps when the agent starts. While the steps run, the plugin puts a wait in front of the agent command. The terminal shows `orca-codegraph: waiting for the CodeGraph index`. The agent starts when the index is ready, or after 300 seconds.
 
 ## What it does not do
 
