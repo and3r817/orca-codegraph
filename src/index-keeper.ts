@@ -1,30 +1,15 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { markerPath } from './launch-wait'
 import type { RunCommand } from './run-command'
 
-export type IndexStatus = {
-  initialized?: boolean
-  index?: { reindexRecommended?: boolean }
-}
-
-export function nextAction(status: IndexStatus): readonly string[] | undefined {
-  if (status.initialized !== true) {
-    return ['init', '--yes']
-  }
-  if (status.index?.reindexRecommended === true) {
-    return ['index', '-f', '-q']
-  }
-  return undefined
-}
+type IndexStatus = { index?: { reindexRecommended?: boolean } }
 
 export function workspacePath(workspaceId: string): string | undefined {
   const separator = workspaceId.indexOf('::')
   const path = separator === -1 ? '' : workspaceId.slice(separator + 2)
   return path === '' ? undefined : path
 }
-
-const indexFile = (root: string): string => join(root, '.codegraph', 'codegraph.db')
 
 export class IndexKeeper {
   private readonly pending = new Map<string, string>()
@@ -35,10 +20,6 @@ export class IndexKeeper {
     private readonly markerDir: string,
     private readonly log: (message: string) => void
   ) {}
-
-  pendingMarker(workspaceId: string): string | undefined {
-    return this.pending.get(workspaceId)
-  }
 
   start(workspaceId: string, path: string): void {
     this.ensure(workspaceId, path).catch((error: unknown) =>
@@ -62,12 +43,16 @@ export class IndexKeeper {
     return this.pending.get(workspaceId)
   }
 
+  private async primaryCheckoutHasIndex(path: string): Promise<boolean> {
+    const git = await this.run('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
+    return git.code === 0 && existsSync(indexFile(dirname(git.stdout.trim())))
+  }
+
   async ensure(workspaceId: string, path: string): Promise<void> {
     if (this.pending.has(workspaceId)) {
       return
     }
     const marker = markerPath(this.markerDir, path)
-    mkdirSync(this.markerDir, { recursive: true })
     writeFileSync(marker, '')
     this.pending.set(workspaceId, marker)
     try {
@@ -81,13 +66,11 @@ export class IndexKeeper {
     }
   }
 
-  private async primaryCheckoutHasIndex(path: string): Promise<boolean> {
-    const git = await this.run('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-    return git.code === 0 && existsSync(indexFile(dirname(git.stdout.trim())))
-  }
-
   private upgradeOnce(): Promise<void> {
-    this.upgrade ??= this.run('codegraph', ['upgrade'], { CODEGRAPH_NO_INSTALL_REFRESH: '1' }).then((result) => {
+    this.upgrade ??= this.run('codegraph', ['upgrade'], {
+      CODEGRAPH_NO_INSTALL_REFRESH: '1',
+      CODEGRAPH_NO_PROMPT_HOOK: '1'
+    }).then((result) => {
       this.upgrade = undefined
       if (result.code !== 0) {
         this.log(`codegraph upgrade failed with exit code ${result.code}`)
@@ -97,16 +80,21 @@ export class IndexKeeper {
   }
 
   private async buildIndex(path: string): Promise<void> {
+    if (!existsSync(indexFile(path))) {
+      const init = await this.run('codegraph', ['init', '--yes', path])
+      this.log(`codegraph init finished with exit code ${init.code} for ${path}`)
+      return
+    }
     const status = await this.run('codegraph', ['status', '--json', path])
     if (status.code !== 0) {
       this.log(`codegraph status failed with exit code ${status.code} for ${path}`)
       return
     }
-    const action = nextAction(JSON.parse(status.stdout) as IndexStatus)
-    if (!action) {
-      return
+    if ((JSON.parse(status.stdout) as IndexStatus).index?.reindexRecommended === true) {
+      const index = await this.run('codegraph', ['index', '-q', path])
+      this.log(`codegraph index finished with exit code ${index.code} for ${path}`)
     }
-    const result = await this.run('codegraph', [...action, path])
-    this.log(`codegraph ${action[0]} finished with exit code ${result.code} for ${path}`)
   }
 }
+
+const indexFile = (root: string): string => join(root, '.codegraph', 'codegraph.db')

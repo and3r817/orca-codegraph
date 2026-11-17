@@ -6,7 +6,6 @@ import { markerPath, waitPrefix } from './launch-wait'
 import type { CommandResult, RunCommand } from './run-command'
 import { createActivate } from './worker'
 
-
 const launch = (workspaceId: string | null) => ({
   agent: 'claude',
   workspaceId,
@@ -47,9 +46,6 @@ function slowInit(root: string, workspace: string): { run: RunCommand; calls: st
     if (file === 'git') {
       return { code: 0, stdout: `${join(root, '.git')}\n` }
     }
-    if (args[0] === 'status') {
-      return { code: 0, stdout: JSON.stringify({ initialized: false }) }
-    }
     return args[0] === 'init' ? initDone : { code: 0, stdout: '' }
   }
   return { run, calls, finishInit: () => finishInit() }
@@ -58,32 +54,31 @@ function slowInit(root: string, workspace: string): { run: RunCommand; calls: st
 test('agent launch waits for the index of a new workspace, and later launches do not', async () => {
   const markerDir = mkdtempSync(join(tmpdir(), 'orca-codegraph-markers-'))
   const workspace = mkdtempSync(join(tmpdir(), 'orca-codegraph-workspace-'))
-  const WORKSPACE_ID = `repo::${workspace}`
-  const WORKTREE = workspace
+  const workspaceId = `repo::${workspace}`
   const { run, calls, finishInit } = slowInit(indexedCheckout(), workspace)
-  const worker = await mountWorker({ default: createActivate(run, markerDir) })
+  const worker = await mountWorker({ default: createActivate(run, () => markerDir) })
 
   await worker.hooks.fire('workspace.create.after', {
-    workspaceId: WORKSPACE_ID,
+    workspaceId: workspaceId,
     kind: 'worktree',
-    path: WORKTREE,
+    path: workspace,
     branch: 'feature'
   })
-  assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(WORKSPACE_ID)), {
+  assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(workspaceId)), {
     kind: 'continue',
     event: {
-      ...launch(WORKSPACE_ID),
-      command: waitPrefix(markerPath(markerDir, WORKTREE)) + launch(WORKSPACE_ID).command
+      ...launch(workspaceId),
+      command: waitPrefix(markerPath(markerDir, workspace)) + launch(workspaceId).command
     }
   })
 
   finishInit()
-  await until(() => !existsSync(markerPath(markerDir, WORKTREE)))
-  assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(WORKSPACE_ID)), {
+  await until(() => !existsSync(markerPath(markerDir, workspace)))
+  assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(workspaceId)), {
     kind: 'continue',
-    event: launch(WORKSPACE_ID)
+    event: launch(workspaceId)
   })
-  assert.equal(calls.at(-1), `codegraph init --yes ${WORKTREE}`)
+  assert.equal(calls.at(-1), `codegraph init --yes ${workspace}`)
   await worker.deactivate()
 })
 
@@ -92,7 +87,7 @@ test('agent launch before workspace creation starts the index check one time', a
   const workspace = mkdtempSync(join(tmpdir(), 'orca-codegraph-workspace-'))
   const workspaceId = `repo::${workspace}`
   const { run, calls, finishInit } = slowInit(indexedCheckout(), workspace)
-  const worker = await mountWorker({ default: createActivate(run, markerDir) })
+  const worker = await mountWorker({ default: createActivate(run, () => markerDir) })
 
   assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(workspaceId)), {
     kind: 'continue',
@@ -122,7 +117,7 @@ test('agent launch before workspace creation starts the index check one time', a
 test('agent launch outside a workspace passes unchanged', async () => {
   const markerDir = mkdtempSync(join(tmpdir(), 'orca-codegraph-markers-'))
   const { run } = slowInit(indexedCheckout(), indexedCheckout())
-  const worker = await mountWorker({ default: createActivate(run, markerDir) })
+  const worker = await mountWorker({ default: createActivate(run, () => markerDir) })
   assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(null)), {
     kind: 'continue',
     event: launch(null)

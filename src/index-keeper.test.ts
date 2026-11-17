@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from '
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
-import { IndexKeeper, nextAction, workspacePath } from './index-keeper'
+import { IndexKeeper, workspacePath } from './index-keeper'
+import { markerPath } from './launch-wait'
 import type { CommandResult, RunCommand } from './run-command'
 
 type Call = { file: string; args: readonly string[]; env?: Readonly<Record<string, string>> }
@@ -46,39 +47,39 @@ function keeperFor(answer: Answer): { keeper: IndexKeeper; calls: Call[]; logs: 
 const codegraphCalls = (calls: Call[]): string[] =>
   calls.filter((call) => call.file === 'codegraph').map((call) => call.args.join(' '))
 
-test('nextAction builds the index when the workspace has none', () => {
-  assert.deepEqual(nextAction({ initialized: false }), ['init', '--yes'])
-})
-
-test('nextAction rebuilds the index when CodeGraph recommends it', () => {
-  assert.deepEqual(nextAction({ initialized: true, index: { reindexRecommended: true } }), ['index', '-f', '-q'])
-})
-
-test('nextAction does nothing for a current index', () => {
-  assert.equal(nextAction({ initialized: true, index: { reindexRecommended: false } }), undefined)
-})
-
-test('upgrades CodeGraph without the install refresh, then builds the index of a new worktree', async () => {
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), { initialized: false }))
-  await keeper.ensure('repo::wt', WORKTREE)
+test('upgrades CodeGraph without side effects, then builds the index of a new worktree', async () => {
+  const workspace = primaryCheckout(false)
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), {}))
+  await keeper.ensure('repo::wt', workspace)
   assert.deepEqual(calls[0], {
     file: 'git',
-    args: ['-C', WORKTREE, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+    args: ['-C', workspace, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
     env: undefined
   })
-  assert.deepEqual(calls[1], { file: 'codegraph', args: ['upgrade'], env: { CODEGRAPH_NO_INSTALL_REFRESH: '1' } })
-  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${WORKTREE}`, `init --yes ${WORKTREE}`])
+  assert.deepEqual(calls[1], {
+    file: 'codegraph',
+    args: ['upgrade'],
+    env: { CODEGRAPH_NO_INSTALL_REFRESH: '1', CODEGRAPH_NO_PROMPT_HOOK: '1' }
+  })
+  assert.deepEqual(codegraphCalls(calls), ['upgrade', `init --yes ${workspace}`])
 })
 
 test('rebuilds the index when CodeGraph recommends it', async () => {
-  const status = { initialized: true, index: { reindexRecommended: true } }
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), status))
-  await keeper.ensure('repo::wt', WORKTREE)
-  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${WORKTREE}`, `index -f -q ${WORKTREE}`])
+  const workspace = primaryCheckout(true)
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), { index: { reindexRecommended: true } }))
+  await keeper.ensure('repo::wt', workspace)
+  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${workspace}`, `index -q ${workspace}`])
+})
+
+test('runs no index command when the index of the workspace is current', async () => {
+  const workspace = primaryCheckout(true)
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), { index: { reindexRecommended: false } }))
+  await keeper.ensure('repo::wt', workspace)
+  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${workspace}`])
 })
 
 test('runs no CodeGraph command when the primary checkout has no index', async () => {
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(false), { initialized: false }))
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(false), {}))
   await keeper.ensure('repo::wt', WORKTREE)
   assert.deepEqual(codegraphCalls(calls), [])
 })
@@ -90,26 +91,27 @@ test('skips a folder that is not a Git repository', async () => {
 })
 
 test('builds the index when the upgrade fails', async () => {
-  const answer = answerFor(primaryCheckout(true), { initialized: false }, { upgrade: { code: 1, stdout: '' } })
+  const workspace = primaryCheckout(false)
+  const answer = answerFor(primaryCheckout(true), {}, { upgrade: { code: 1, stdout: '' } })
   const { keeper, calls, logs } = keeperFor(answer)
-  await keeper.ensure('repo::wt', WORKTREE)
-  assert.equal(codegraphCalls(calls).at(-1), `init --yes ${WORKTREE}`)
+  await keeper.ensure('repo::wt', workspace)
+  assert.equal(codegraphCalls(calls).at(-1), `init --yes ${workspace}`)
   assert.equal(logs[0], 'codegraph upgrade failed with exit code 1')
 })
 
 test('runs one upgrade for two workspaces created together', async () => {
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), { initialized: false }))
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), {}))
   await Promise.all([keeper.ensure('repo::a', '/work/a'), keeper.ensure('repo::b', '/work/b')])
   assert.equal(codegraphCalls(calls).filter((line) => line === 'upgrade').length, 1)
 })
 
 test('builds no index and removes the marker when codegraph is not installed', async () => {
+  const workspace = primaryCheckout(true)
   const answer = answerFor(primaryCheckout(true), {}, { upgrade: MISSING, status: MISSING })
   const { keeper, calls, logs, markerDir } = keeperFor(answer)
-  await keeper.ensure('repo::wt', WORKTREE)
-  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${WORKTREE}`])
-  assert.equal(logs.at(-1), `codegraph status failed with exit code 127 for ${WORKTREE}`)
-  assert.equal(keeper.pendingMarker('repo::wt'), undefined)
+  await keeper.ensure('repo::wt', workspace)
+  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${workspace}`])
+  assert.equal(logs.at(-1), `codegraph status failed with exit code 127 for ${workspace}`)
   assert.deepEqual(readdirSync(markerDir), [])
 })
 
@@ -118,16 +120,14 @@ test('keeps a marker file while the index is built and removes it after', async 
   const initDone = new Promise<CommandResult>((resolve) => {
     finishInit = () => resolve(OK)
   })
-  const base = answerFor(primaryCheckout(true), { initialized: false })
-  const { keeper } = keeperFor((call) => (call.args[0] === 'init' ? initDone : base(call)))
+  const base = answerFor(primaryCheckout(true), {})
+  const { keeper, markerDir } = keeperFor((call) => (call.args[0] === 'init' ? initDone : base(call)))
   const ensured = keeper.ensure('repo::wt', WORKTREE)
-  const marker = keeper.pendingMarker('repo::wt')
-  assert.ok(marker)
+  const marker = markerPath(markerDir, WORKTREE)
   assert.equal(existsSync(marker), true)
   finishInit()
   await ensured
   assert.equal(existsSync(marker), false)
-  assert.equal(keeper.pendingMarker('repo::wt'), undefined)
 })
 
 test('ignores a second check for a workspace whose index is being built', async () => {
@@ -135,14 +135,14 @@ test('ignores a second check for a workspace whose index is being built', async 
   const initDone = new Promise<CommandResult>((resolve) => {
     finishInit = () => resolve(OK)
   })
-  const base = answerFor(primaryCheckout(true), { initialized: false })
-  const { keeper, calls } = keeperFor((call) => (call.args[0] === 'init' ? initDone : base(call)))
+  const base = answerFor(primaryCheckout(true), {})
+  const { keeper, calls, markerDir } = keeperFor((call) => (call.args[0] === 'init' ? initDone : base(call)))
   const first = keeper.ensure('repo::wt', WORKTREE)
   const second = keeper.ensure('repo::wt', WORKTREE)
   finishInit()
   await Promise.all([first, second])
   assert.equal(codegraphCalls(calls).filter((line) => line.startsWith('init')).length, 1)
-  assert.equal(keeper.pendingMarker('repo::wt'), undefined)
+  assert.equal(existsSync(markerPath(markerDir, WORKTREE)), false)
 })
 
 async function until(condition: () => boolean): Promise<void> {
@@ -157,7 +157,7 @@ function slowInitAnswer(root: string): { answer: Answer; finishInit: () => void 
   const initDone = new Promise<CommandResult>((resolve) => {
     finishInit = () => resolve(OK)
   })
-  const base = answerFor(root, { initialized: false })
+  const base = answerFor(root, {})
   return { answer: (call) => (call.args[0] === 'init' ? initDone : base(call)), finishInit: () => finishInit() }
 }
 
@@ -169,39 +169,38 @@ test('workspacePath returns the text after the first separator', () => {
 })
 
 test('holdLaunch does not wait when the id has no path', async () => {
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), { initialized: false }))
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), {}))
   assert.equal(await keeper.holdLaunch('no-separator'), undefined)
   assert.equal(calls.length, 0)
 })
 
 test('holdLaunch does not wait when the workspace has an index', async () => {
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), { initialized: false }))
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(true), {}))
   const workspace = primaryCheckout(true)
   assert.equal(await keeper.holdLaunch(`repo::${workspace}`), undefined)
   assert.equal(calls.length, 0)
 })
 
 test('holdLaunch runs only git when the primary checkout has no index', async () => {
-  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(false), { initialized: false }))
+  const { keeper, calls } = keeperFor(answerFor(primaryCheckout(false), {}))
   assert.equal(await keeper.holdLaunch(`repo::${primaryCheckout(false)}`), undefined)
   assert.deepEqual(calls.map((call) => call.file), ['git'])
 })
 
 test('holdLaunch starts the index build and returns the marker', async () => {
   const { answer, finishInit } = slowInitAnswer(primaryCheckout(true))
-  const { keeper, calls } = keeperFor(answer)
+  const { keeper, calls, markerDir } = keeperFor(answer)
   const workspace = primaryCheckout(false)
   const workspaceId = `repo::${workspace}`
   const marker = await keeper.holdLaunch(workspaceId)
   assert.ok(marker)
-  assert.equal(marker, keeper.pendingMarker(workspaceId))
+  assert.equal(marker, markerPath(markerDir, workspace))
   assert.equal(existsSync(marker), true)
   await until(() => codegraphCalls(calls).some((line) => line.startsWith('init')))
   assert.equal(existsSync(marker), true)
   finishInit()
   await until(() => !existsSync(marker))
-  assert.equal(keeper.pendingMarker(workspaceId), undefined)
-  assert.deepEqual(codegraphCalls(calls), ['upgrade', `status --json ${workspace}`, `init --yes ${workspace}`])
+  assert.deepEqual(codegraphCalls(calls), ['upgrade', `init --yes ${workspace}`])
 })
 
 test('holdLaunch returns the pending marker without more commands', async () => {
@@ -214,13 +213,40 @@ test('holdLaunch returns the pending marker without more commands', async () => 
   assert.equal(await keeper.holdLaunch(workspaceId), first)
   assert.equal(calls.length, callCount)
   finishInit()
-  await until(() => keeper.pendingMarker(workspaceId) === undefined)
+  assert.ok(first)
+  await until(() => !existsSync(first))
+})
+
+test('holdLaunch and a workspace creation during its git check build the index one time', async () => {
+  const workspace = primaryCheckout(false)
+  const workspaceId = `repo::${workspace}`
+  let releaseGit = (): void => {}
+  const gitHeld = new Promise<void>((resolve) => {
+    releaseGit = resolve
+  })
+  const base = answerFor(primaryCheckout(true), {})
+  const { keeper, calls, markerDir } = keeperFor(async (call) => {
+    if (call.file === 'git') {
+      await gitHeld
+    }
+    return base(call)
+  })
+  const held = keeper.holdLaunch(workspaceId)
+  await until(() => calls.length > 0)
+  keeper.start(workspaceId, workspace)
+  releaseGit()
+  const marker = markerPath(markerDir, workspace)
+  assert.equal(await held, marker)
+  await until(() => !existsSync(marker))
+  assert.equal(codegraphCalls(calls).filter((line) => line === 'upgrade').length, 1)
+  assert.equal(codegraphCalls(calls).filter((line) => line === `init --yes ${workspace}`).length, 1)
 })
 
 test('start logs a failed index check', async () => {
+  const workspace = primaryCheckout(true)
   const answer = answerFor(primaryCheckout(true), {}, { status: { code: 0, stdout: 'not json' } })
   const { keeper, logs } = keeperFor(answer)
-  keeper.start('repo::wt', WORKTREE)
+  keeper.start('repo::wt', workspace)
   await until(() => logs.length > 0)
-  assert.equal(logs[0]?.startsWith(`index check failed for ${WORKTREE}: `), true)
+  assert.equal(logs[0]?.startsWith(`index check failed for ${workspace}: `), true)
 })
