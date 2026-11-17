@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, mountWorker, test } from 'orca/testing'
@@ -6,8 +6,6 @@ import { markerPath, waitPrefix } from './launch-wait'
 import type { CommandResult, RunCommand } from './run-command'
 import { createActivate } from './worker'
 
-const WORKSPACE_ID = 'repo::/work/feature'
-const WORKTREE = '/work/feature'
 
 const launch = (workspaceId: string | null) => ({
   agent: 'claude',
@@ -19,16 +17,30 @@ const launch = (workspaceId: string | null) => ({
 
 function indexedCheckout(): string {
   const root = mkdtempSync(join(tmpdir(), 'orca-codegraph-test-'))
-  mkdirSync(join(root, '.codegraph'))
-  writeFileSync(join(root, '.codegraph', 'codegraph.db'), '')
+  writeIndex(root)
   return root
 }
 
-function slowInit(root: string): { run: RunCommand; calls: string[]; finishInit: () => void } {
+function writeIndex(root: string): void {
+  mkdirSync(join(root, '.codegraph'), { recursive: true })
+  writeFileSync(join(root, '.codegraph', 'codegraph.db'), '')
+}
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !condition(); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert.equal(condition(), true)
+}
+
+function slowInit(root: string, workspace: string): { run: RunCommand; calls: string[]; finishInit: () => void } {
   const calls: string[] = []
   let finishInit = (): void => {}
   const initDone = new Promise<CommandResult>((resolve) => {
-    finishInit = () => resolve({ code: 0, stdout: '' })
+    finishInit = () => {
+      writeIndex(workspace)
+      resolve({ code: 0, stdout: '' })
+    }
   })
   const run: RunCommand = async (file, args) => {
     calls.push([file, ...args].join(' '))
@@ -45,7 +57,10 @@ function slowInit(root: string): { run: RunCommand; calls: string[]; finishInit:
 
 test('agent launch waits for the index of a new workspace, and later launches do not', async () => {
   const markerDir = mkdtempSync(join(tmpdir(), 'orca-codegraph-markers-'))
-  const { run, calls, finishInit } = slowInit(indexedCheckout())
+  const workspace = mkdtempSync(join(tmpdir(), 'orca-codegraph-workspace-'))
+  const WORKSPACE_ID = `repo::${workspace}`
+  const WORKTREE = workspace
+  const { run, calls, finishInit } = slowInit(indexedCheckout(), workspace)
   const worker = await mountWorker({ default: createActivate(run, markerDir) })
 
   await worker.hooks.fire('workspace.create.after', {
@@ -63,7 +78,7 @@ test('agent launch waits for the index of a new workspace, and later launches do
   })
 
   finishInit()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await until(() => !existsSync(markerPath(markerDir, WORKTREE)))
   assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(WORKSPACE_ID)), {
     kind: 'continue',
     event: launch(WORKSPACE_ID)
@@ -72,9 +87,41 @@ test('agent launch waits for the index of a new workspace, and later launches do
   await worker.deactivate()
 })
 
+test('agent launch before workspace creation starts the index check one time', async () => {
+  const markerDir = mkdtempSync(join(tmpdir(), 'orca-codegraph-markers-'))
+  const workspace = mkdtempSync(join(tmpdir(), 'orca-codegraph-workspace-'))
+  const workspaceId = `repo::${workspace}`
+  const { run, calls, finishInit } = slowInit(indexedCheckout(), workspace)
+  const worker = await mountWorker({ default: createActivate(run, markerDir) })
+
+  assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(workspaceId)), {
+    kind: 'continue',
+    event: {
+      ...launch(workspaceId),
+      command: waitPrefix(markerPath(markerDir, workspace)) + launch(workspaceId).command
+    }
+  })
+  await worker.hooks.fire('workspace.create.after', {
+    workspaceId,
+    kind: 'worktree',
+    path: workspace,
+    branch: 'feature'
+  })
+
+  finishInit()
+  await until(() => !existsSync(markerPath(markerDir, workspace)))
+  assert.equal(calls.filter((line) => line === 'codegraph upgrade').length, 1)
+  assert.equal(calls.filter((line) => line === `codegraph init --yes ${workspace}`).length, 1)
+  assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(workspaceId)), {
+    kind: 'continue',
+    event: launch(workspaceId)
+  })
+  await worker.deactivate()
+})
+
 test('agent launch outside a workspace passes unchanged', async () => {
   const markerDir = mkdtempSync(join(tmpdir(), 'orca-codegraph-markers-'))
-  const { run } = slowInit(indexedCheckout())
+  const { run } = slowInit(indexedCheckout(), indexedCheckout())
   const worker = await mountWorker({ default: createActivate(run, markerDir) })
   assert.deepEqual(await worker.hooks.fire('agent.launch.before', launch(null)), {
     kind: 'continue',

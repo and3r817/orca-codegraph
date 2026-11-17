@@ -6,7 +6,7 @@ This plugin is unofficial. The CodeGraph project and the Orca project did not ma
 
 ## What it does
 
-When Orca creates a workspace, the plugin does these steps in the background:
+The plugin does these steps in the background when Orca creates a workspace. It also does them when an agent starts in a workspace that has no index.
 
 1. It finds the primary checkout of the repository with `git rev-parse --git-common-dir`.
 2. If the primary checkout has no `.codegraph/codegraph.db`, the plugin stops. A repository that does not use CodeGraph stays untouched.
@@ -15,12 +15,12 @@ When Orca creates a workspace, the plugin does these steps in the background:
 5. If the workspace has no index, it runs `codegraph init --yes`.
 6. If CodeGraph recommends a new index, it runs `codegraph index -f -q`.
 
-If an agent starts in that workspace before the index is ready, the plugin puts a wait in front of the agent command. The terminal shows `orca-codegraph: waiting for the CodeGraph index`. The agent starts when the index is ready, or after 300 seconds.
+Orca starts the agent of a new workspace before it reports the new workspace. The plugin therefore starts the steps at the agent start. The plugin puts a wait in front of the agent command. The terminal shows `orca-codegraph: waiting for the CodeGraph index`. The agent starts when the index is ready, or after 300 seconds.
 
 ## What it does not do
 
 - It does not index the primary checkout. Run `codegraph init` there one time.
-- It does not index a workspace that existed before you enabled the plugin.
+- It does not check a workspace that already has an index when an agent starts there.
 - It does not run on Windows.
 
 ## Requirements

@@ -18,6 +18,14 @@ export function nextAction(status: IndexStatus): readonly string[] | undefined {
   return undefined
 }
 
+export function workspacePath(workspaceId: string): string | undefined {
+  const separator = workspaceId.indexOf('::')
+  const path = separator === -1 ? '' : workspaceId.slice(separator + 2)
+  return path === '' ? undefined : path
+}
+
+const indexFile = (root: string): string => join(root, '.codegraph', 'codegraph.db')
+
 export class IndexKeeper {
   private readonly pending = new Map<string, string>()
   private upgrade: Promise<void> | undefined
@@ -29,6 +37,28 @@ export class IndexKeeper {
   ) {}
 
   pendingMarker(workspaceId: string): string | undefined {
+    return this.pending.get(workspaceId)
+  }
+
+  start(workspaceId: string, path: string): void {
+    this.ensure(workspaceId, path).catch((error: unknown) =>
+      this.log(`index check failed for ${path}: ${String(error)}`)
+    )
+  }
+
+  async holdLaunch(workspaceId: string): Promise<string | undefined> {
+    const pending = this.pending.get(workspaceId)
+    if (pending) {
+      return pending
+    }
+    const path = workspacePath(workspaceId)
+    if (path === undefined || existsSync(indexFile(path))) {
+      return undefined
+    }
+    if (!(await this.primaryCheckoutHasIndex(path))) {
+      return undefined
+    }
+    this.start(workspaceId, path)
     return this.pending.get(workspaceId)
   }
 
@@ -53,7 +83,7 @@ export class IndexKeeper {
 
   private async primaryCheckoutHasIndex(path: string): Promise<boolean> {
     const git = await this.run('git', ['-C', path, 'rev-parse', '--path-format=absolute', '--git-common-dir'])
-    return git.code === 0 && existsSync(join(dirname(git.stdout.trim()), '.codegraph', 'codegraph.db'))
+    return git.code === 0 && existsSync(indexFile(dirname(git.stdout.trim())))
   }
 
   private upgradeOnce(): Promise<void> {

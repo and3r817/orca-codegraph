@@ -14,13 +14,11 @@ export function createActivate(run: RunCommand, markerDir: string): (orca: OrcaW
     }
     const keeper = new IndexKeeper(run, markerDir, (message) => orca.log(message))
     orca.hooks.on('workspace.create.after', (event) => {
-      keeper
-        .ensure(event.workspaceId, event.path)
-        .catch((error: unknown) => orca.log(`index check failed for ${event.path}: ${String(error)}`))
+      keeper.start(event.workspaceId, event.path)
       return undefined
     })
-    orca.hooks.on('agent.launch.before', (event, next) => {
-      const marker = event.workspaceId ? keeper.pendingMarker(event.workspaceId) : undefined
+    orca.hooks.on('agent.launch.before', async (event, next) => {
+      const marker = event.workspaceId ? await keeper.holdLaunch(event.workspaceId) : undefined
       return marker ? next({ ...event, command: waitPrefix(marker) + event.command }) : undefined
     })
   }
